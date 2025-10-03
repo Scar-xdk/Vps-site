@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Console - Nerodiov</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    function sendCmd() {
+      const cmd = document.getElementById("cmd").value;
+      if (!cmd) return;
+      socket.emit("cmd", cmd);
+      document.getElementById("cmd").value = "";
+    }
+    socket.on("console", (msg) => {
+      const log = document.getElementById("log");
+      log.innerHTML += `<pre>${msg}</pre>`;
+      log.scrollTop = log.scrollHeight;
+    });
+  </script>
+</head>
+<body>
+  <div class="navbar">
+    <a href="/">Painel</a>
+    <a href="upload.html">Upload</a>
+    <a href="config.html">Configurações</a>
+    <a href="server.html">Console</a>
+  </div>
+  <div class="container">
+    <div class="card">
+      <h2>Console em Tempo Real 💻</h2>
+      <div id="log" style="height:300px; overflow:auto; background:black; padding:10px;"></div>
+      <input id="cmd" placeholder="Digite um comando..."/>
+      <button onclick="sendCmd()">Enviar</button>
+    </div>
+  </div>
+</body>
+</html>
+
