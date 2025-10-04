@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Register</title></head><body>
+<h1>Register</h1>
+<form id="f">
+  <input name="email" placeholder="email"/><br/>
+  <input type="password" name="password" placeholder="senha"/><br/>
+  <button>Registrar</button>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = { email: fd.get('email'), password: fd.get('password') };
+  const r = await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const json = await r.json();
+  if(json.ok) location.href = '/';
+  else alert(json.error || 'erro');
+});
+</script>
+</body></html>
+

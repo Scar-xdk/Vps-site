@@ -1,0 +1,1499 @@
+"""
+Bot Telegram - Petya Search v0.0.1
+Python 3.11+ | python-telegram-bot==20.7 | reportlab
+"""
+
+import logging
+import asyncio 
+import json, re
+import tempfile
+import random
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
+import threading
+import time
+import ipaddress
+import requests
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+from telegram.constants import ParseMode
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+# ==================== CONFIGURAÇÕES NO TOPO ====================
+TOKEN = "8248285817:AAGtOpEMXKNQEz0RsxmGienjuYnGVmQvMZQ"
+ADMIN_ID = 6939434522
+BOT_NAME = "Petya Search"
+BOT_VERSION = "v0.0.1"
+
+# ==================== LOGGING ====================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ==================== PATHS ====================
+BASE_DIR = Path("petya search")
+DATA_DIR = BASE_DIR / "base-dados"
+DONOS_DIR = BASE_DIR / "donos"
+
+USER_FILE = DATA_DIR / "user.json"
+LOGS_FILE = DATA_DIR / "logs.json"
+CONFIG_FILE = DONOS_DIR / "config-all.json"
+MENU_PHOTO = BASE_DIR / "menu_photo.jpg"
+
+# ==================== CRIAÇÃO DE ESTRUTURA ====================
+def create_structure():
+    """Cria diretórios e arquivos necessários"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DONOS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    if not CONFIG_FILE.exists():
+        config = {
+            "bot_name": BOT_NAME,
+            "version": BOT_VERSION,
+            "admins": [ADMIN_ID],
+            "greeting": "Olá! Bem-vindo ao bot.",
+            "token": TOKEN,
+            "bans": [],
+            "bot_on": True,
+            "suporte_message": "Olá, preciso de ajuda com o bot!"
+        }
+        CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False))
+    
+    if not USER_FILE.exists():
+        USER_FILE.write_text("[]")
+    
+    if not LOGS_FILE.exists():
+        LOGS_FILE.write_text("{}")
+
+# ==================== FUNÇÕES AUXILIARES ====================
+def load_json(file_path: Path) -> Any:
+    """Carrega arquivo JSON"""
+    try:
+        return json.loads(file_path.read_text(encoding='utf-8'))
+    except:
+        return [] if file_path == USER_FILE else {}
+
+def save_json(file_path: Path, data: Any):
+    """Salva dados em JSON"""
+    file_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+
+def get_config() -> Dict:
+    """Retorna configuração"""
+    return load_json(CONFIG_FILE)
+
+def save_config(config: Dict):
+    """Salva configuração"""
+    save_json(CONFIG_FILE, config)
+
+def get_users() -> List[Dict]:
+    """Retorna lista de usuários"""
+    return load_json(USER_FILE)
+
+def save_users(users: List[Dict]):
+    """Salva lista de usuários"""
+    save_json(USER_FILE, users)
+
+def get_logs() -> Dict:
+    """Retorna logs"""
+    return load_json(LOGS_FILE)
+
+def save_logs(logs: Dict):
+    """Salva logs"""
+    save_json(LOGS_FILE, logs)
+
+def add_log(user_id: int, action: str, details: str = ""):
+    """Adiciona log de ação do usuário"""
+    logs = get_logs()
+    user_id_str = str(user_id)
+    
+    if user_id_str not in logs:
+        logs[user_id_str] = []
+    
+    log_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "details": details
+    }
+    
+    logs[user_id_str].append(log_entry)
+    save_logs(logs)
+
+def is_admin(user_id: int) -> bool:
+    """Verifica se usuário é admin"""
+    config = get_config()
+    return user_id in config.get("admins", [])
+
+def is_banned(user_id: int) -> bool:
+    """Verifica se usuário está banido"""
+    config = get_config()
+    return user_id in config.get("bans", [])
+
+def is_bot_on() -> bool:
+    """Verifica se bot está ativo"""
+    config = get_config()
+    return config.get("bot_on", True)
+
+def is_vip(user_id: int) -> bool:
+    """Verifica se usuário é VIP"""
+    users = get_users()
+    for user in users:
+        if user.get("id") == user_id:
+            if user.get("vip", False):
+                vip_until = user.get("vip_until")
+                if vip_until:
+                    vip_date = datetime.fromisoformat(vip_until)
+                    if datetime.now() < vip_date:
+                        return True
+                    else:
+                        user["vip"] = False
+                        user["vip_until"] = None
+                        save_users(users)
+                        return False
+            return False
+    return False
+
+def parse_time_duration(duration_str: str) -> Optional[timedelta]:
+    """
+    Parse duration string like '20s', '30m', '24h', '7d'
+    Returns timedelta or None
+    """
+    try:
+        unit = duration_str[-1].lower()
+        value = int(duration_str[:-1])
+        
+        if unit == 's':
+            return timedelta(seconds=value)
+        elif unit == 'm':
+            return timedelta(minutes=value)
+        elif unit == 'h':
+            return timedelta(hours=value)
+        elif unit == 'd':
+            return timedelta(days=value)
+        else:
+            return None
+    except:
+        return None
+
+async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
+    """Envia mensagem para admin"""
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=message,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Erro ao enviar para admin: {e}")
+
+def get_user_data(user_id: int) -> Optional[Dict]:
+    """Retorna dados do usuário"""
+    users = get_users()
+    for user in users:
+        if user.get("id") == user_id:
+            return user
+    return None
+
+# ==================== FUNÇÃO CRIAR DESIGN (SEPARADA) ====================
+def gerar_pdf_design(output_path: str) -> str:
+    """
+    Gera PDF com design azul e roxo
+    Retorna o caminho do arquivo gerado
+    """
+    c = canvas.Canvas(output_path, pagesize=A4)
+    width, height = A4
+    
+    num_strips = 100
+    for i in range(num_strips):
+        ratio = i / num_strips
+        r = int(138 * ratio + 0 * (1 - ratio))
+        g = int(43 * ratio + 0 * (1 - ratio))
+        b = int(226 * ratio + 255 * (1 - ratio))
+        
+        c.setFillColorRGB(r/255, g/255, b/255)
+        c.rect(0, height - (i+1) * (height/num_strips), width, height/num_strips, fill=1, stroke=0)
+    
+    c.setFillColorRGB(1, 1, 1)
+    c.setFont("Helvetica-Bold", 24)
+    c.drawCentredString(width/2, height/2, f"{BOT_NAME} - Design")
+    
+    c.save()
+    return output_path
+
+async def pkg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or f"user{user_id}"
+
+    nome = context.args[0] if len(context.args) > 0 else username
+    github = context.args[1] if len(context.args) > 1 else username
+    versao = context.args[2] if len(context.args) > 2 else "1.0.0"
+    deps_str = context.args[3] if len(context.args) > 3 else ""
+    license_ = context.args[4] if len(context.args) > 4 else "MIT"
+    scripts_str = context.args[5] if len(context.args) > 5 else "start=node index.js"
+    dev_deps_str = context.args[6] if len(context.args) > 6 else ""
+    keywords_str = context.args[7] if len(context.args) > 7 else f"{username},bot,package"
+    node_version = context.args[8] if len(context.args) > 8 else ">=14.0.0"
+
+    nome = re.sub(r"[^a-zA-Z0-9_-]", "-", nome.lower())
+
+    deps_list = [dep.strip() for dep in deps_str.split(",") if dep.strip()]
+    dependencies = {dep: "*" for dep in deps_list}
+
+    dev_deps_list = [dep.strip() for dep in dev_deps_str.split(",") if dep.strip()]
+    devDependencies = {dep: "*" for dep in dev_deps_list}
+
+    scripts = {}
+    for s in scripts_str.split(","):
+        if "=" in s:
+            k, v = s.split("=", 1)
+            scripts[k.strip()] = v.strip()
+
+    keywords = [kw.strip() for kw in keywords_str.split(",") if kw.strip()]
+
+    repository = {}
+    bugs = {}
+    homepage = ""
+    if github.startswith("http://") or github.startswith("https://"):
+        repository = {"type": "git", "url": github}
+        bugs = {"url": f"{github}/issues"}
+        homepage = github
+    else:
+        repository = {"type": "git", "url": f"https://github.com/{github}/{nome}.git"}
+        bugs = {"url": f"https://github.com/{github}/{nome}/issues"}
+        homepage = f"https://github.com/{github}/{nome}"
+
+    package_json = {
+        "name": nome,
+        "version": versao,
+        "description": f"Projeto gerado pelo bot para {github}",
+        "main": "index.js",
+        "scripts": scripts,
+        "author": github,
+        "license": license_,
+        "dependencies": dependencies,
+        "devDependencies": devDependencies,
+        "repository": repository,
+        "bugs": bugs,
+        "homepage": homepage,
+        "keywords": keywords,
+        "engines": {"node": node_version}
+    }
+
+    json_text = json.dumps(package_json, indent=2, ensure_ascii=False)
+
+    await update.message.reply_text(
+        f"<blockquote><pre>{json_text}</pre></blockquote>",
+        parse_mode="HTML"
+    )
+
+
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+PESQUISAS_JSON = DATA_DIR / "pesquisas_ip.json"
+if not PESQUISAS_JSON.exists():
+    PESQUISAS_JSON.write_text("[]", encoding="utf-8")
+
+FRASES_BIBLICA = [
+    "Tudo posso naquele que me fortalece. (Filipenses 4:13)",
+    "O Senhor é meu pastor; nada me faltará. (Salmo 23:1)",
+    "Entrega o teu caminho ao Senhor; confia nele, e o mais ele fará. (Salmo 37:5)",
+    "Confia no Senhor de todo o teu coração. (Provérbios 3:5)"
+]
+
+async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.first_name
+    if is_banned(user_id):
+        return
+    if not context.args:
+        await update.message.reply_text("Use: /ip <endereço_ip>")
+        return
+    ip = context.args[0].strip()
+    add_log(user_id, "comando", f"/ip {ip}")
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        ip_type = "IPv4" if ip_obj.version == 4 else "IPv6"
+    except:
+        await update.message.reply_text("Endereço IP inválido. Informe um IPv4 ou IPv6 válido.")
+        return
+    await update.message.reply_text(f"🔎 Consultando {ip} ({ip_type})...")
+    try:
+        resp = requests.get(
+            f"http://ip-api.com/json/{ip}",
+            params={"fields": "status,message,country,countryCode,region,regionName,city,zip,isp,org,as,query,lat,lon,timezone,reverse,mobile,proxy,hosting"},
+            timeout=10
+        )
+        data = resp.json()
+    except:
+        await update.message.reply_text("Erro ao consultar serviço externo. Tente novamente mais tarde.")
+        return
+    if data.get("status") != "success":
+        await update.message.reply_text(f"Falha ao localizar IP: {data.get('message', 'erro desconhecido')}")
+        return
+    celular = "Desconhecido"
+    if data.get("mobile") is True:
+        celular = "Smartphone / dispositivo móvel"
+    elif data.get("mobile") is False:
+        celular = "Computador / Desktop"
+    frase_dia = random.choice(FRASES_BIBLICA)
+    resultado_dict = {
+        "status": "sucesso",
+        "mensagem": "Consulta realizada com sucesso",
+        "ip": data.get("query"),
+        "tipo": ip_type,
+        "celular": celular,
+        "localizacao": {
+            "pais": data.get("country"),
+            "codigo_pais": data.get("countryCode"),
+            "estado": data.get("regionName"),
+            "cidade": data.get("city"),
+            "cep": data.get("zip") or "não disponível",
+            "latitude": data.get("lat"),
+            "longitude": data.get("lon"),
+            "timezone": data.get("timezone"),
+            "link_maps": f"https://www.google.com/maps?q={data.get('lat')},{data.get('lon')}"
+        },
+        "rede": {
+            "isp": data.get("isp"),
+            "org": data.get("org"),
+            "as": data.get("as"),
+            "hosting": data.get("hosting"),
+            "proxy": data.get("proxy"),
+            "mobile": data.get("mobile"),
+            "reverse_dns": data.get("reverse")
+        },
+        "frase_dia": frase_dia
+    }
+    try:
+        pesquisas = json.loads(PESQUISAS_JSON.read_text(encoding="utf-8"))
+    except:
+        pesquisas = []
+    pesquisas.append({
+        "usuario_id": user_id,
+        "usuario_nome": username,
+        "ip_pesquisado": ip,
+        "resultado": resultado_dict,
+        "timestamp": int(time.time())
+    })
+    PESQUISAS_JSON.write_text(json.dumps(pesquisas, indent=2, ensure_ascii=False), encoding="utf-8")
+    await update.message.reply_text(
+        f"<blockquote><pre>{json.dumps(resultado_dict, indent=2, ensure_ascii=False)}</pre></blockquote>",
+        parse_mode=ParseMode.HTML
+    )
+    aviso = f"Usuário {username} ({user_id}) pesquisou o IP: {ip}"
+    await context.bot.send_message(chat_id=ADMIN_ID, text=aviso)
+    
+    
+#========= ALGUNS COMANDOS 
+
+async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    target = None
+    if context.args:
+        arg = context.args[0]
+        if arg.isdigit():
+            target = await context.bot.get_chat(int(arg))
+        else:
+            target = await context.bot.get_chat(arg)
+    else:
+        target = update.effective_user
+
+    already_used = False
+    users = get_users()
+    for u in users:
+        if u.get("id") == target.id:
+            already_used = True
+            break
+
+    user_data = {
+        "id": target.id,
+        "nome": target.first_name,
+        "username": target.username or "não possui",
+        "bio": getattr(target, "bio", "não possui"),
+        "ja_usou_o_bot": already_used
+    }
+
+    photos = await context.bot.get_user_profile_photos(target.id, limit=1)
+    if photos.total_count > 0:
+        file = await context.bot.get_file(photos.photos[0][-1].file_id)
+        await update.message.reply_photo(photo=file.file_id, caption="📸 Foto do usuário")
+
+    await update.message.reply_text(
+        f"<pre>{json.dumps(user_data, indent=2, ensure_ascii=False)}</pre>",
+        parse_mode="HTML"
+    )
+
+async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    coin = context.args[0].lower() if context.args else "bitcoin"
+    try:
+        resp = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd")
+        data = resp.json()
+        if coin not in data:
+            await update.message.reply_text(f"Moeda '{coin}' não encontrada")
+            return
+        result = {"moeda": coin, "preco_usd": data[coin]["usd"]}
+        await update.message.reply_text(
+            f"<pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Erro ao buscar preço: {e}")
+
+async def cep_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Use: /cep <cep>")
+        return
+    cep = context.args[0].replace("-", "").strip()
+    try:
+        resp = requests.get(f"https://viacep.com.br/ws/{cep}/json/")
+        data = resp.json()
+        await update.message.reply_text(
+            f"<pre>{json.dumps(data, indent=2, ensure_ascii=False)}</pre>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Erro ao buscar CEP: {e}")
+
+async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nome = context.args[0] if context.args else "index"
+    html_text = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>{nome}</title>
+</head>
+<body>
+  <h1>Olá, {nome}!</h1>
+</body>
+</html>"""
+    await update.message.reply_text(f"<pre>{html_text}</pre>", parse_mode="HTML")
+
+async def css_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nome = context.args[0] if context.args else "style"
+    css_text = f"""/* CSS para {nome} */
+body {{
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+    margin: 0;
+    padding: 0;
+}}"""
+    await update.message.reply_text(f"<pre>{css_text}</pre>", parse_mode="HTML")
+
+async def js_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nome = context.args[0] if context.args else "script"
+    js_text = f"""// JS para {nome}
+console.log("Olá, {nome}!");"""
+    await update.message.reply_text(f"<pre>{js_text}</pre>", parse_mode="HTML")
+
+
+
+# ==================== THREAD DE VERIFICAÇÃO VIP ====================
+def vip_checker_thread(application: Application):
+    """Thread que verifica expiração de VIP a cada 10 segundos"""
+    while True:
+        try:
+            time.sleep(10)  # Verifica a cada 10 segundos
+            users = get_users()
+            updated = False
+            
+            for user in users:
+                if user.get("vip", False):
+                    vip_until = user.get("vip_until")
+                    if vip_until:
+                        vip_date = datetime.fromisoformat(vip_until)
+                        if datetime.now() >= vip_date:
+                            user["vip"] = False
+                            user["vip_until"] = None
+                            updated = True
+                           
+                            config = get_config()
+                            message = (
+                                f"<blockquote>⏰ Seu tempo de VIP expirou!</blockquote>\n\n"
+                                f"Se deseja adquirir mais tempo VIP, entre em contato com o suporte:"
+                            )
+                            
+                            keyboard = [[
+                                InlineKeyboardButton(
+                                    "💬 Falar com Suporte",
+                                    url=f"https://t.me/suporte?text={config.get('suporte_message', 'Olá!')}"
+                                )
+                            ]]
+                            reply_markup = InlineKeyboardMarkup(keyboard)
+                           
+                            import asyncio
+                            asyncio.run_coroutine_threadsafe(
+                                application.bot.send_message(
+                                    chat_id=user["id"],
+                                    text=message,
+                                    parse_mode=ParseMode.HTML,
+                                    reply_markup=reply_markup
+                                ),
+                                application.bot_data.get('event_loop')
+                            )
+                            
+                            logger.info(f"VIP expirado para usuário {user['id']}")
+            
+            if updated:
+                save_users(users)
+                
+        except Exception as e:
+            logger.error(f"Erro no checker de VIP: {e}")
+
+# ==================== HANDLERS ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /start"""
+    user = update.effective_user
+    
+    # Verificar ban
+    if is_banned(user.id):
+        await update.message.reply_text(
+            "<blockquote>Você está banido.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        add_log(user.id, "comando", "/start (banido)")
+        return
+    
+    # Verificar se bot está ativo
+    if not is_bot_on() and not is_admin(user.id):
+        await update.message.reply_text(
+            "<blockquote>🔧 Bot em manutenção. Aguarde...</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Registrar usuário
+    users = get_users()
+    user_exists = False
+    
+    for u in users:
+        if u.get("id") == user.id:
+            user_exists = True
+            break
+    
+    if not user_exists:
+        # Pegar foto do perfil
+        photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+        photo_url = None
+        if photos.total_count > 0:
+            photo_file = await photos.photos[0][-1].get_file()
+            photo_url = photo_file.file_path
+        
+        user_data = {
+            "id": user.id,
+            "nome": user.full_name,
+            "username": user.username or "sem_username",
+            "start_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "photo_url": photo_url,
+            "vip": False,
+            "vip_until": None
+        }
+        users.append(user_data)
+        save_users(users)
+    
+    add_log(user.id, "comando", "/start")
+    
+    # Menu principal
+    config = get_config()
+    greeting = config.get("greeting", "Olá! Bem-vindo ao bot.")
+    
+    text = (
+        f"<blockquote>{greeting}</blockquote>\n\n"
+        f"<b>{BOT_NAME} {BOT_VERSION}</b>\n"
+        f"Olá, <b>{user.full_name}</b>! Escolha uma opção:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔍 Google Dork", callback_data="google_dork")],
+        [InlineKeyboardButton("📊 Meus Logs", callback_data="my_logs")],
+        [InlineKeyboardButton("⚠️ Reportar Erro", callback_data="report_error")],
+        [InlineKeyboardButton("💬 Suporte", callback_data="suporte")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Verificar se tem foto de menu
+    if MENU_PHOTO.exists():
+        await update.message.reply_photo(
+            photo=open(MENU_PHOTO, 'rb'),
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+
+async def dork_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /dork <termo>"""
+    user_id = update.effective_user.id
+    
+    if is_banned(user_id):
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Use: /dork <termo>")
+        return
+    
+    termo = " ".join(context.args)
+    add_log(user_id, "comando", f"/dork {termo}")
+    
+    # Simulação de busca
+    resultado = (
+        f"<b>🔍 Resultados para:</b> {termo}\n\n"
+        f"<code>site:instagram.com \"{termo}\"</code>\n"
+        f"<code>site:facebook.com \"{termo}\"</code>\n"
+        f"<code>site:twitter.com \"{termo}\"</code>\n\n"
+        f"<i>Busca realizada com sucesso!</i>"
+    )
+    
+    # Salvar em txt
+    txt_file = DATA_DIR / f"dork_{user_id}_{int(time.time())}.txt"
+    txt_file.write_text(resultado, encoding='utf-8')
+    
+    await update.message.reply_document(
+        document=open(txt_file, 'rb'),
+        caption=f"<b>Resultados da busca por:</b> {termo}",
+        parse_mode=ParseMode.HTML
+    )
+    
+    txt_file.unlink()  # Remove arquivo temporário
+
+async def criar_design_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /criar_design"""
+    user_id = update.effective_user.id
+    
+    if is_banned(user_id):
+        return
+    
+    add_log(user_id, "comando", "/criar_design")
+    
+    await update.message.reply_text("⏳ Gerando design...")
+    
+    # Gerar PDF
+    pdf_path = DATA_DIR / f"design_{user_id}_{int(time.time())}.pdf"
+    gerar_pdf_design(str(pdf_path))
+    
+    await update.message.reply_document(
+        document=open(pdf_path, 'rb'),
+        caption="<b>✨ Design criado com sucesso!</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    pdf_path.unlink()  # Remove arquivo temporário
+
+async def suporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /suporte"""
+    user_id = update.effective_user.id
+    
+    if is_banned(user_id):
+        return
+    
+    add_log(user_id, "comando", "/suporte")
+    
+    config = get_config()
+    suporte_msg = config.get("suporte_message", "Olá, preciso de ajuda!")
+    
+    text = "<b>💬 Suporte</b>\n\nEntre em contato: @suporte"
+    keyboard = [[
+        InlineKeyboardButton(
+            "💬 Enviar mensagem",
+            url=f"https://t.me/suporte?text={suporte_msg}"
+        )
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup
+    )
+
+async def search_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /search-id <id> (VIP only)"""
+    user_id = update.effective_user.id
+    
+    if is_banned(user_id):
+        return
+    
+    # Verificar se é VIP
+    if not is_vip(user_id) and not is_admin(user_id):
+        # Ignorar comando
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Use: /search-id <id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except:
+        await update.message.reply_text("ID inválido!")
+        return
+    
+    add_log(user_id, "comando", f"/search-id {target_id}")
+    
+    # Buscar perfil
+    try:
+        target_user = await context.bot.get_chat(target_id)
+        
+        # Pegar foto
+        photos = await context.bot.get_user_profile_photos(target_id, limit=1)
+        photo_url = None
+        if photos.total_count > 0:
+            photo_file = await photos.photos[0][-1].get_file()
+            photo_url = photo_file.file_path
+        
+        text = (
+            f"<b>👤 Informações do usuário {target_id}:</b>\n\n"
+            f"<b>Nome:</b> {target_user.full_name}\n"
+            f"<b>Username:</b> @{target_user.username or 'sem username'}\n"
+            f"<b>ID:</b> <code>{target_id}</code>\n"
+        )
+        
+        if photo_url:
+            text += f"\n<b>Foto:</b> {photo_url}"
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro ao buscar usuário: {e}")
+
+# ==================== ADMIN COMMANDS ====================
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /ban <id>"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Use: /ban <id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+        config = get_config()
+        
+        if target_id not in config["bans"]:
+            config["bans"].append(target_id)
+            save_config(config)
+            await update.message.reply_text(f"✅ Usuário {target_id} banido!")
+            add_log(update.effective_user.id, "admin", f"ban {target_id}")
+        else:
+            await update.message.reply_text(f"Usuário {target_id} já está banido.")
+    except:
+        await update.message.reply_text("ID inválido!")
+
+async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /unban <id>"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Use: /unban <id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+        config = get_config()
+        
+        if target_id in config["bans"]:
+            config["bans"].remove(target_id)
+            save_config(config)
+            await update.message.reply_text(f"✅ Usuário {target_id} desbanido!")
+            add_log(update.effective_user.id, "admin", f"unban {target_id}")
+        else:
+            await update.message.reply_text(f"Usuário {target_id} não está banido.")
+    except:
+        await update.message.reply_text("ID inválido!")
+
+async def vip_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /vip <id> <tempo>"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("Use: /vip <id> <tempo>\nExemplo: /vip 123456 24h")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+        duration_str = context.args[1]
+        
+        duration = parse_time_duration(duration_str)
+        if not duration:
+            await update.message.reply_text("Formato de tempo inválido! Use: 20s, 30m, 24h, 7d")
+            return
+        
+        vip_until = datetime.now() + duration
+        
+        users = get_users()
+        user_found = False
+        
+        for user in users:
+            if user.get("id") == target_id:
+                user["vip"] = True
+                user["vip_until"] = vip_until.isoformat()
+                user_found = True
+                break
+        
+        if not user_found:
+            await update.message.reply_text("❌ Usuário não encontrado na base de dados!")
+            return
+        
+        save_users(users)
+        
+        # Notificar admin
+        await update.message.reply_text(
+            f"✅ Usuário {target_id} agora é VIP até {vip_until.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        # Notificar usuário
+        user_data = get_user_data(target_id)
+        nome = user_data.get("nome", "Usuário") if user_data else "Usuário"
+        
+        message = (
+            f"<blockquote>🌟 Parabéns, {nome}!</blockquote>\n\n"
+            f"Você acaba de se tornar <b>VIP</b> em nosso bot <b>{BOT_NAME}</b>!\n\n"
+            f"<b>Duração:</b> {duration_str}\n"
+            f"<b>Válido até:</b> {vip_until.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"<i>Aproveite seus benefícios exclusivos!</i>"
+        )
+        
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=message,
+            parse_mode=ParseMode.HTML
+        )
+        
+        add_log(update.effective_user.id, "admin", f"vip {target_id} {duration_str}")
+        
+    except ValueError:
+        await update.message.reply_text("ID inválido!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro: {e}")
+
+async def del_vip_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /del-vip <id>"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Use: /del-vip <id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+        
+        users = get_users()
+        user_found = False
+        
+        for user in users:
+            if user.get("id") == target_id:
+                user["vip"] = False
+                user["vip_until"] = None
+                user_found = True
+                break
+        
+        if not user_found:
+            await update.message.reply_text("❌ Usuário não encontrado!")
+            return
+        
+        save_users(users)
+        
+        # Notificar admin
+        await update.message.reply_text(f"✅ VIP removido do usuário {target_id}")
+        
+        # Notificar usuário
+        config = get_config()
+        message = (
+            f"<blockquote>⚠️ Seu VIP foi removido</blockquote>\n\n"
+            f"Você perdeu seu acesso VIP no bot <b>{BOT_NAME}</b>.\n\n"
+            f"Se deseja ter novamente, entre em contato com o suporte:"
+        )
+        
+        keyboard = [[
+            InlineKeyboardButton(
+                "💬 Falar com Suporte",
+                url=f"https://t.me/suporte?text={config.get('suporte_message', 'Olá!')}"
+            )
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+        
+        add_log(update.effective_user.id, "admin", f"del-vip {target_id}")
+        
+    except ValueError:
+        await update.message.reply_text("ID inválido!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro: {e}")
+
+async def bot_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /botoff"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    config = get_config()
+    config["bot_on"] = False
+    save_config(config)
+    
+    await update.message.reply_text("🔧 Bot em manutenção!")
+    
+    # Notificar todos os usuários
+    users = get_users()
+    for user in users:
+        if user["id"] != update.effective_user.id:
+            try:
+                await context.bot.send_message(
+                    chat_id=user["id"],
+                    text="<blockquote>🔧 Bot em manutenção. Voltamos em breve!</blockquote>",
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+    
+    add_log(update.effective_user.id, "admin", "botoff")
+
+async def bot_online(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /boton"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    config = get_config()
+    config["bot_on"] = True
+    save_config(config)
+    
+    await update.message.reply_text("✅ Bot online!")
+    
+    # Notificar todos os usuários
+    users = get_users()
+    for user in users:
+        if user["id"] != update.effective_user.id:
+            try:
+                await context.bot.send_message(
+                    chat_id=user["id"],
+                    text="<blockquote>✅ Bot está online novamente!</blockquote>",
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+    
+    add_log(update.effective_user.id, "admin", "boton")
+
+async def ids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /ids - Lista todos usuários (paginado)"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    users = get_users()
+    
+    if not users:
+        await update.message.reply_text("Nenhum usuário registrado.")
+        return
+    
+    # Paginar: 50 por página
+    page = 0
+    if context.args:
+        try:
+            page = int(context.args[0])
+        except:
+            pass
+    
+    per_page = 50
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    
+    users_page = users[start_idx:end_idx]
+    
+    text = f"<b>👥 Usuários Registrados (Página {page + 1}):</b>\n\n"
+    
+    for user in users_page:
+        text += f"━━━━━━━━━━━━━━━━━\n"
+        text += f"<b>Nome:</b> {user.get('nome', 'N/A')}\n"
+        text += f"<b>Username:</b> @{user.get('username', 'sem username')}\n"
+        text += f"<b>ID:</b> <code>{user.get('id')}</code>\n"
+        text += f"<b>Start:</b> {user.get('start_date', 'N/A')}\n"
+    
+    text += f"━━━━━━━━━━━━━━━━━\n"
+    text += f"\n<i>Total: {len(users)} usuários</i>"
+    
+    # Botões de navegação
+    keyboard = []
+    nav_buttons = []
+    
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("« Anterior", callback_data=f"ids_page_{page-1}"))
+    
+    if end_idx < len(users):
+        nav_buttons.append(InlineKeyboardButton("Próximo »", callback_data=f"ids_page_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    keyboard.append([InlineKeyboardButton("« Voltar", callback_data="back_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    add_log(update.effective_user.id, "admin", "ids")
+
+async def info_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /info_id <id>"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Use: /info_id <id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+        
+        # Buscar dados do usuário
+        user_data = get_user_data(target_id)
+        
+        if not user_data:
+            await update.message.reply_text("❌ Usuário não encontrado!")
+            return
+        
+        # Buscar logs
+        logs = get_logs()
+        user_logs = logs.get(str(target_id), [])
+        
+        # Último comando
+        last_command = "Nenhum"
+        for log in reversed(user_logs):
+            if log.get("action") == "comando":
+                last_command = f"{log['details']} em {log['timestamp']}"
+                break
+        
+        text = (
+            f"<b>👤 Informações do Usuário:</b>\n\n"
+            f"<b>Nome:</b> {user_data.get('nome', 'N/A')}\n"
+            f"<b>Username:</b> @{user_data.get('username', 'sem username')}\n"
+            f"<b>ID:</b> <code>{target_id}</code>\n"
+            f"<b>Start:</b> {user_data.get('start_date', 'N/A')}\n"
+            f"<b>VIP:</b> {'✅ Sim' if user_data.get('vip', False) else '❌ Não'}\n"
+            f"<b>Último comando:</b> {last_command}\n"
+            f"<b>Total de logs:</b> {len(user_logs)}"
+        )
+        
+        if user_data.get("photo_url"):
+            text += f"\n\n<b>Foto:</b> <a href='{user_data['photo_url']}'>Ver foto</a>"
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        
+        # Enviar logs como arquivo
+        if user_logs:
+            logs_txt = f"Logs do usuário {target_id} - {user_data.get('nome')}\n\n"
+            for log in user_logs:
+                logs_txt += f"[{log['timestamp']}] {log['action']}: {log.get('details', '')}\n"
+            
+            txt_file = DATA_DIR / f"logs_{target_id}.txt"
+            txt_file.write_text(logs_txt, encoding='utf-8')
+            
+            await update.message.reply_document(
+                document=open(txt_file, 'rb'),
+                caption=f"<b>📋 Logs completos do usuário {target_id}</b>",
+                parse_mode=ParseMode.HTML
+            )
+            
+            txt_file.unlink()
+        
+        add_log(update.effective_user.id, "admin", f"info_id {target_id}")
+        
+    except ValueError:
+        await update.message.reply_text("ID inválido!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro: {e}")
+
+async def fotomenu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /fotomenu"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    await update.message.reply_text("📸 Envie a foto que deseja usar como menu:")
+    context.user_data['waiting_menu_photo'] = True
+    add_log(update.effective_user.id, "admin", "fotomenu")
+
+async def rm_fotomenu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /rm_foto-menu"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if MENU_PHOTO.exists():
+        MENU_PHOTO.unlink()
+        await update.message.reply_text("✅ Foto do menu removida!")
+        add_log(update.effective_user.id, "admin", "rm_foto-menu")
+    else:
+        await update.message.reply_text("❌ Não há foto de menu salva.")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para receber fotos"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    if context.user_data.get('waiting_menu_photo'):
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
+        await file.download_to_drive(MENU_PHOTO)
+        
+        await update.message.reply_text("✅ Foto do menu salva com sucesso!")
+        context.user_data['waiting_menu_photo'] = False
+        add_log(update.effective_user.id, "admin", "foto_menu_salva")
+
+# ==================== CALLBACK HANDLERS ====================
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para callbacks de botões"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if is_banned(user_id):
+        await query.message.edit_text(
+            "<blockquote>Você está banido.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    add_log(user_id, "botao", data)
+    
+    # Menu principal
+    if data == "back_menu":
+        config = get_config()
+        greeting = config.get("greeting", "Olá! Bem-vindo ao bot.")
+        
+        text = (
+            f"<blockquote>{greeting}</blockquote>\n\n"
+            f"<b>{BOT_NAME} {BOT_VERSION}</b>\n"
+            f"Olá, <b>{query.from_user.full_name}</b>! Escolha uma opção:"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🔍 Google Dork", callback_data="google_dork")],
+            [InlineKeyboardButton("📊 Meus Logs", callback_data="my_logs")],
+            [InlineKeyboardButton("⚠️ Reportar Erro", callback_data="report_error")],
+            [InlineKeyboardButton("💬 Suporte", callback_data="suporte")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Editar com ou sem foto
+        if MENU_PHOTO.exists() and query.message.photo:
+            await query.message.edit_caption(
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+        else:
+            await query.message.edit_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+    
+    elif data == "google_dork":
+        text = (
+            "<b>🔍 Google Dork</b>\n\n"
+            "Use o comando:\n"
+            "<code>/dork &lt;termo&gt;</code>\n\n"
+            "<i>Exemplo: /dork joao</i>"
+        )
+        keyboard = [[InlineKeyboardButton("« Voltar", callback_data="back_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    elif data == "my_logs":
+        logs = get_logs()
+        user_logs = logs.get(str(user_id), [])
+        
+        if not user_logs:
+            text = "<b>📊 Meus Logs</b>\n\n<i>Você ainda não possui logs.</i>"
+            keyboard = [[InlineKeyboardButton("« Voltar", callback_data="back_menu")]]
+        else:
+            # Paginação
+            page = 0
+            per_page = 5
+            start_idx = page * per_page
+            end_idx = start_idx + per_page
+            
+            logs_page = user_logs[start_idx:end_idx]
+            
+            text = f"<b>📊 Meus Logs (Página {page + 1}):</b>\n\n<pre>"
+            for log in logs_page:
+                text += f"[{log['timestamp']}]\n"
+                text += f"Ação: {log['action']}\n"
+                text += f"Detalhes: {log.get('details', 'N/A')}\n"
+                text += "─────────────────\n"
+            text += "</pre>"
+            
+            keyboard = []
+            nav_buttons = []
+            
+            if end_idx < len(user_logs):
+                nav_buttons.append(InlineKeyboardButton("Próximo »", callback_data=f"logs_page_{page+1}"))
+            
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+            
+            keyboard.append([InlineKeyboardButton("🗑️ Limpar Meus Logs", callback_data="clear_logs")])
+            keyboard.append([InlineKeyboardButton("« Voltar", callback_data="back_menu")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    elif data.startswith("logs_page_"):
+        page = int(data.split("_")[-1])
+        logs = get_logs()
+        user_logs = logs.get(str(user_id), [])
+        
+        per_page = 5
+        start_idx = page * per_page
+        end_idx = start_idx + per_page
+        
+        logs_page = user_logs[start_idx:end_idx]
+        
+        text = f"<b>📊 Meus Logs (Página {page + 1}):</b>\n\n<pre>"
+        for log in logs_page:
+            text += f"[{log['timestamp']}]\n"
+            text += f"Ação: {log['action']}\n"
+            text += f"Detalhes: {log.get('details', 'N/A')}\n"
+            text += "─────────────────\n"
+        text += "</pre>"
+        
+        keyboard = []
+        nav_buttons = []
+        
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("« Anterior", callback_data=f"logs_page_{page-1}"))
+        
+        if end_idx < len(user_logs):
+            nav_buttons.append(InlineKeyboardButton("Próximo »", callback_data=f"logs_page_{page+1}"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("🗑️ Limpar Meus Logs", callback_data="clear_logs")])
+        keyboard.append([InlineKeyboardButton("« Voltar", callback_data="back_menu")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    elif data == "clear_logs":
+        logs = get_logs()
+        logs[str(user_id)] = []
+        save_logs(logs)
+        
+        text = "<b>✅ Seus logs foram limpos!</b>"
+        keyboard = [[InlineKeyboardButton("« Voltar", callback_data="back_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    elif data == "report_error":
+        text = (
+            "<b>⚠️ Reportar Erro</b>\n\n"
+            "Descreva o erro que você encontrou:"
+        )
+        keyboard = [[InlineKeyboardButton("« Voltar", callback_data="back_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        context.user_data['waiting_report'] = True
+        
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    elif data == "suporte":
+        config = get_config()
+        suporte_msg = config.get("suporte_message", "Olá, preciso de ajuda!")
+        
+        text = "<b>💬 Suporte</b>\n\nEntre em contato: @suporte"
+        keyboard = [
+            [InlineKeyboardButton("💬 Enviar mensagem", url=f"https://t.me/suporte?text={suporte_msg}")],
+            [InlineKeyboardButton("« Voltar", callback_data="back_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    elif data.startswith("ids_page_"):
+        page = int(data.split("_")[-1])
+        users = get_users()
+        
+        per_page = 50
+        start_idx = page * per_page
+        end_idx = start_idx + per_page
+        
+        users_page = users[start_idx:end_idx]
+        
+        text = f"<b>👥 Usuários Registrados (Página {page + 1}):</b>\n\n"
+        
+        for user in users_page:
+            text += f"━━━━━━━━━━━━━━━━━\n"
+            text += f"<b>Nome:</b> {user.get('nome', 'N/A')}\n"
+            text += f"<b>Username:</b> @{user.get('username', 'sem username')}\n"
+            text += f"<b>ID:</b> <code>{user.get('id')}</code>\n"
+            text += f"<b>Start:</b> {user.get('start_date', 'N/A')}\n"
+        
+        text += f"━━━━━━━━━━━━━━━━━\n"
+        text += f"\n<i>Total: {len(users)} usuários</i>"
+        
+        keyboard = []
+        nav_buttons = []
+        
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("« Anterior", callback_data=f"ids_page_{page-1}"))
+        
+        if end_idx < len(users):
+            nav_buttons.append(InlineKeyboardButton("Próximo »", callback_data=f"ids_page_{page+1}"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("« Voltar", callback_data="back_menu")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para mensagens de texto"""
+    user_id = update.effective_user.id
+    
+    if is_banned(user_id):
+        return
+    
+    # Report
+    if context.user_data.get('waiting_report'):
+        report_text = update.message.text
+        user = update.effective_user
+        
+        # Enviar para admin
+        photos = await context.bot.get_user_profile_photos(user_id, limit=1)
+        photo_url = None
+        if photos.total_count > 0:
+            photo_file = await photos.photos[0][-1].get_file()
+            photo_url = photo_file.file_path
+        
+        admin_msg = (
+            f"<b>⚠️ NOVO REPORT</b>\n\n"
+            f"<b>De:</b> {user.full_name}\n"
+            f"<b>Username:</b> @{user.username or 'sem username'}\n"
+            f"<b>ID:</b> <code>{user_id}</code>\n"
+            f"<b>Data:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+        
+        if photo_url:
+            admin_msg += f"<b>Foto:</b> <a href='{photo_url}'>Ver foto</a>\n"
+        
+        admin_msg += f"\n<b>Mensagem:</b>\n<blockquote>{report_text}</blockquote>"
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=admin_msg,
+            parse_mode=ParseMode.HTML
+        )
+        
+        await update.message.reply_text(
+            "✅ Seu report foi enviado para o administrador!",
+            parse_mode=ParseMode.HTML
+        )
+        
+        context.user_data['waiting_report'] = False
+        add_log(user_id, "report", report_text)
+
+# ==================== MAIN ====================
+def main():
+    """Função principal"""
+    # Criar estrutura
+    create_structure()
+    
+    # Criar aplicação
+    application = Application.builder().token(TOKEN).build()
+    
+    application.bot_data['event_loop'] = asyncio.get_event_loop()
+
+    
+    # Handlers públicos
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("dork", dork_command))
+    application.add_handler(CommandHandler("criar_design", criar_design_command))
+    application.add_handler(CommandHandler("suporte", suporte_command))
+    application.add_handler(CommandHandler("search_id", search_id_command))
+    
+    # Handlers admin   
+    application.add_handler(CommandHandler("userinfo", userinfo_command))
+    application.add_handler(CommandHandler("crypto", crypto_command))
+    application.add_handler(CommandHandler("bitcoin", crypto_command))
+    application.add_handler(CommandHandler("cep", cep_command))
+    application.add_handler(CommandHandler("html", html_command))
+    application.add_handler(CommandHandler("css", css_command))
+    application.add_handler(CommandHandler("js", js_command))
+
+    application.add_handler(CommandHandler("ip", ip_command))
+    application.add_handler(CommandHandler("pkg", pkg_command))
+    application.add_handler(CommandHandler("ban", ban_user))
+    application.add_handler(CommandHandler("unban", unban_user))
+    application.add_handler(CommandHandler("vip", vip_user))
+    application.add_handler(CommandHandler("del_vip", del_vip_user))
+    application.add_handler(CommandHandler("botoff", bot_maintenance))
+    application.add_handler(CommandHandler("boton", bot_online))
+    application.add_handler(CommandHandler("ids", ids_command))
+    application.add_handler(CommandHandler("info_id", info_id_command))
+    application.add_handler(CommandHandler("fotomenu", fotomenu_command))
+    application.add_handler(CommandHandler("rm_foto_menu", rm_fotomenu_command))
+    
+    # Handlers de mensagens
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # Callback handler
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Iniciar thread de verificação VIP
+    vip_thread = threading.Thread(target=vip_checker_thread, args=(application,), daemon=True)
+    vip_thread.start()
+    
+    # Iniciar bot
+    logger.info(f"{BOT_NAME} {BOT_VERSION} iniciado!")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()

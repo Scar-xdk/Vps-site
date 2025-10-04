@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Panel</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Panel</h1>
+      <div id="user"></div>
+      <button id="logout">Logout</button>
+    </header>
+
+    <aside id="sidebar">
+      <button id="createServerBtn">☰ Create Server</button>
+      <button id="myServersBtn">My Servers</button>
+    </aside>
+
+    <main id="main">
+      <div id="content">
+        <h2>Dashboard</h2>
+        <div id="serversList"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal create server -->
+  <div id="modal" class="hidden">
+    <div class="modal-inner">
+      <h3>Create Server</h3>
+      <form id="createForm">
+        <label>Name: <input name="name" required pattern="[\w\-]+" /></label><br/>
+        <label>Language:
+          <select name="lang">
+            <option value="node">Node.js</option>
+            <option value="python">Python</option>
+            <option value="php">PHP</option>
+          </select>
+        </label><br/>
+        <label>Version: <input name="version" /></label><br/>
+        <label>Start command: <input name="startCommand" required /></label><br/>
+        <label><input type="checkbox" name="hasDeps"> Has deps (requirements / package.json)</label><br/>
+        <button>Create</button>
+        <button type="button" id="cancelModal">Cancel</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
+
