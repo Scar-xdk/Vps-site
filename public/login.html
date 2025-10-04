@@ -1,25 +1,44 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Login</title></head>
+<head><meta charset="utf-8"><title>Login — Nerodiov</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/styles.css"></head>
 <body>
-  <h1>Login</h1>
-  <form id="f">
-    <input name="email" placeholder="email"/><br/>
-    <input type="password" name="password" placeholder="senha"/><br/>
-    <button>Login</button>
-  </form>
-  <p>Ou <a href="/register.html">registrar</a></p>
-  <script>
-    document.getElementById('f').addEventListener('submit', async (e)=>{
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      const body = { email: fd.get('email'), password: fd.get('password') };
-      const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      const json = await r.json();
-      if(json.ok) location.href = '/';
-      else alert(json.error || 'erro');
-    });
-  </script>
+  <div class="container">
+    <div class="card" style="max-width:420px;">
+      <aside class="sidebar" style="width:120px;padding:12px">
+        <img src="/img/cat.png" style="width:64px;height:64px;border-radius:50%;object-fit:cover">
+      </aside>
+      <main class="panel-main">
+        <h2 class="h-title">Login</h2>
+        <p class="h-sub">Entre com seu email e senha</p>
+
+        <div class="form-card">
+          <form id="loginForm">
+            <div class="label">Email</div>
+            <input class="input" name="email" placeholder="seu@exemplo.com" required>
+            <div class="label">Senha</div>
+            <input class="input" type="password" name="password" placeholder="senha" required>
+            <div style="margin-top:12px">
+              <button class="btn primary" type="submit">Entrar</button>
+              <a href="/register.html" class="btn" style="display:inline-block">Registrar</a>
+            </div>
+          </form>
+        </div>
+
+        <div class="footer">Esqueceu a senha? Em breve com email automático</div>
+      </main>
+    </div>
+  </div>
+
+<script>
+document.getElementById('loginForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = { email: fd.get('email'), password: fd.get('password') };
+  const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const j = await res.json();
+  if(res.ok && j.ok) location.href = '/';
+  else alert(j.error || 'Falha ao logar');
+});
+</script>
 </body>
 </html>
-
