@@ -21,7 +21,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // SESSION - NÃO use MemoryStore em produção; trocar por RedisStore em produção
 app.use(session({
-  secret: process.env.SECRET_SESSION || 'troqueisso_por_uma_senha_grande',
+  secret: process.env.SECRET_SESSION || 'darkfrostping18aK#mport',
   resave: false,
   saveUninitialized: false,
   cookie: { httpOnly: true, secure: false } // em produção: secure:true (https)
